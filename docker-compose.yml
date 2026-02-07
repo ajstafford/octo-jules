@@ -1,0 +1,29 @@
+services:
+  orchestrator:
+    build: .
+    command: python3 orchestrator.py
+    env_file: .env
+    volumes:
+      - ./octo_jules.db:/app/octo_jules.db
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    command: python3 -m streamlit run dashboard.py --server.address=0.0.0.0
+    ports:
+      - "8501:8501"
+    env_file: .env
+    volumes:
+      - ./octo_jules.db:/app/octo_jules.db
+    restart: unless-stopped
+
+  telegram_bot:
+    build: .
+    command: python3 telegram_bot.py
+    env_file: .env
+    volumes:
+      - ./octo_jules.db:/app/octo_jules.db
+    restart: unless-stopped
+
+volumes:
+  db_data:
