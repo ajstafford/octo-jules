@@ -23,6 +23,14 @@ def init_db():
                 updated_at TIMESTAMP
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        # Initialize default settings
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('paused', 'false')")
         conn.commit()
 
 def save_session(session_id, issue_number, title, repo, state="CREATED"):
@@ -61,7 +69,33 @@ def update_session_state(session_id, state):
         conn.commit()
 
 def get_session_by_issue(issue_number, repo):
-    """Retrieve a session by issue number and repo."""
+    """Retrieve the most recent session by issue number and repo."""
     with get_connection() as conn:
-        cursor = conn.execute("SELECT * FROM sessions WHERE issue_number = ? AND repo = ?", (issue_number, repo))
+        cursor = conn.execute(
+            "SELECT * FROM sessions WHERE issue_number = ? AND repo = ? ORDER BY created_at DESC", 
+            (issue_number, repo)
+        )
         return cursor.fetchone()
+
+def get_active_sessions(repo):
+    """Retrieve all sessions that are not merged or failed."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "SELECT * FROM sessions WHERE repo = ? AND state NOT IN ('MERGED', 'FAILED')", 
+            (repo,)
+        )
+        return cursor.fetchall()
+
+def is_paused():
+    """Check if the orchestrator is paused."""
+    with get_connection() as conn:
+        cursor = conn.execute("SELECT value FROM settings WHERE key = 'paused'")
+        row = cursor.fetchone()
+        return row[0].lower() == 'true' if row else False
+
+def set_paused(paused: bool):
+    """Set the paused state."""
+    val = 'true' if paused else 'false'
+    with get_connection() as conn:
+        conn.execute("UPDATE settings SET value = ? WHERE key = 'paused'", (val,))
+        conn.commit()

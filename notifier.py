@@ -41,3 +41,7 @@ def notify_pr_created(issue_number, pr_url):
 def notify_merged(issue_number, pr_number):
     msg = f"✅ *Merged*\n\nPR #{pr_number} for Issue #{issue_number} has been successfully merged!"
     send_message(msg)
+
+def notify_failed(issue_number, session_id):
+    msg = f"❌ *Session Failed*\n\nSession {session_id} for Issue #{issue_number} has failed.\nOrchestrator has been PAUSED."
+    send_message(msg)

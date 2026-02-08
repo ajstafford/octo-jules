@@ -29,6 +29,9 @@ JULES_API_KEY = os.getenv("JULES_API_KEY")
 
 JULES_API_BASE = "https://jules.googleapis.com/v1alpha"
 
+# Track retries for merging COMPLETED sessions
+merge_retries = {}
+
 def run_command(command, cwd=None):
     """Run a shell command and return the output."""
     try:
@@ -55,7 +58,7 @@ def fetch_open_issues():
 
 def fetch_next_issue():
     """Fetch the next available issue from the backlog, skipping processed ones."""
-    logger.info("Fetching next issue...")
+    logger.info("Checking for next available issue...")
     issues = fetch_open_issues()
     if not issues:
         logger.info("No issues found in backlog.")
@@ -66,14 +69,12 @@ def fetch_next_issue():
         # Check database for this issue
         sess = db.get_session_by_issue(issue_number, TARGET_REPO)
         if sess:
-            state = sess[4] # 'state' column
-            if state in ["MERGED", "COMPLETED", "IN_PROGRESS"]:
-                logger.info(f"Issue #{issue_number} is already tracked as {state}. Skipping.")
-                continue
+            logger.info(f"Issue #{issue_number} is already in DB. Skipping in fetch.")
+            continue
         
         return issue
     
-    logger.info("All open issues have already been processed or are in progress.")
+    logger.info("All open issues have already been processed.")
     return None
 
 def get_repo_info():
@@ -99,14 +100,14 @@ def get_repo_info():
         return None, None
 
 def find_existing_session(title):
-    """Check if there's an existing session for this issue."""
+    """Check if there's an existing session for this issue on Jules API."""
     headers = {"x-goog-api-key": JULES_API_KEY}
     try:
-        response = requests.get(f"{JULES_API_BASE}/sessions?pageSize=10", headers=headers)
+        response = requests.get(f"{JULES_API_BASE}/sessions?pageSize=20", headers=headers)
         response.raise_for_status()
         sessions = response.json().get('sessions', [])
         for s in sessions:
-            if s.get('title') == title and s.get('state') in ["IN_PROGRESS", "PLANNING"]:
+            if s.get('title') == title and s.get('state') not in ["COMPLETED", "FAILED"]:
                 sid = s.get('id') or s.get('name').split('/')[-1]
                 return sid
         return None
@@ -114,51 +115,61 @@ def find_existing_session(title):
         logger.error(f"Failed to check existing sessions: {e}")
         return None
 
-def run_jules_api_session(issue):
-    """Invoke Jules via REST API with corrected payload."""
-    source_name, default_branch = get_repo_info()
-    if not source_name:
-        return None
-
+def run_jules_api_session(issue, session_id=None):
+    """Invoke Jules via REST API and poll for completion."""
     issue_number = issue['number']
     issue_title = issue['title']
     session_title = f"Fix Issue #{issue_number}"
     
-    # Check for existing session
-    existing_id = find_existing_session(session_title)
-    if existing_id:
-        logger.info(f"Resuming existing session {existing_id} for {session_title}")
-        session_id = existing_id
+    # Check for existing session in DB first if not provided
+    if not session_id:
+        existing_db_sess = db.get_session_by_issue(issue_number, TARGET_REPO)
+        if existing_db_sess and existing_db_sess[4] not in ["MERGED", "FAILED"]:
+            session_id = existing_db_sess[0]
+            logger.info(f"Resuming session {session_id} from DB for Issue #{issue_number}")
     else:
-        logger.info(f"Starting Jules API session for Issue #{issue_number} on {default_branch} branch")
-        notifier.notify_session_started(issue_number, issue_title)
-        
-        headers = {
-            "x-goog-api-key": JULES_API_KEY,
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "prompt": f"Fix Issue #{issue_number}: {issue_title}\n\n{issue['body']}",
-            "sourceContext": {
-                "source": source_name,
-                "githubRepoContext": {
-                    "startingBranch": default_branch
-                }
-            },
-            "automationMode": "AUTO_CREATE_PR",
-            "title": session_title
-        }
-        
-        try:
-            response = requests.post(f"{JULES_API_BASE}/sessions", headers=headers, json=payload)
-            response.raise_for_status()
-            session = response.json()
-            session_id = session['id']
-            logger.info(f"Session {session_id} created. Polling...")
-        except Exception as e:
-            logger.error(f"API Request failed: {e}")
-            return None
+         logger.info(f"Resuming specific session {session_id} for Issue #{issue_number}")
+
+    if not session_id:
+        # Check Jules API for any non-terminal session with this title
+        existing_id = find_existing_session(session_title)
+        if existing_id:
+            logger.info(f"Found active Jules session {existing_id} for {session_title}. Resuming.")
+            session_id = existing_id
+        else:
+            source_name, default_branch = get_repo_info()
+            if not source_name:
+                return None
+
+            logger.info(f"Starting NEW Jules API session for Issue #{issue_number}")
+            notifier.notify_session_started(issue_number, issue_title)
+            
+            headers = {
+                "x-goog-api-key": JULES_API_KEY,
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "prompt": f"Fix Issue #{issue_number}: {issue_title}\n\n{issue.get('body', '')}",
+                "sourceContext": {
+                    "source": source_name,
+                    "githubRepoContext": {
+                        "startingBranch": default_branch
+                    }
+                },
+                "automationMode": "AUTO_CREATE_PR",
+                "title": session_title
+            }
+            
+            try:
+                response = requests.post(f"{JULES_API_BASE}/sessions", headers=headers, json=payload)
+                response.raise_for_status()
+                session = response.json()
+                session_id = session['id']
+                logger.info(f"Session {session_id} created. Polling...")
+            except Exception as e:
+                logger.error(f"API Request failed: {e}")
+                return None
 
     # Track in DB
     db.save_session(session_id, issue_number, issue_title, TARGET_REPO, "IN_PROGRESS")
@@ -166,6 +177,12 @@ def run_jules_api_session(issue):
     # Common Polling Logic
     headers = {"x-goog-api-key": JULES_API_KEY}
     while True:
+        # Check if we should pause while polling
+        if db.is_paused():
+            logger.info("Orchestrator paused. Waiting 30s...")
+            time.sleep(30)
+            continue
+
         try:
             status_res = requests.get(f"{JULES_API_BASE}/sessions/{session_id}", headers=headers)
             status_res.raise_for_status()
@@ -180,6 +197,9 @@ def run_jules_api_session(issue):
                 return session_data
             elif state == "FAILED":
                 logger.error(f"Session {session_id} failed.")
+                db.update_session_state(session_id, "FAILED")
+                notifier.notify_failed(issue_number, session_id)
+                db.set_paused(True)
                 return None
                 
             time.sleep(60)
@@ -200,8 +220,10 @@ def merge_pull_request(issue_number, session_data=None):
     prs = json.loads(pr_output)
     target_pr = None
     
-    session_id = session_data.get('id') if session_data and isinstance(session_data, dict) else None
-    if not session_id and session_data and isinstance(session_data, str):
+    session_id = None
+    if isinstance(session_data, dict):
+        session_id = session_data.get('id')
+    elif isinstance(session_data, str):
         session_id = session_data
 
     for pr in prs:
@@ -209,17 +231,11 @@ def merge_pull_request(issue_number, session_data=None):
         branch = pr['headRefName'].lower()
         issue_ref = f"#{issue_number}"
         
-        # Check by Session ID in branch name
-        if session_id and session_id in branch:
+        if session_id and str(session_id) in branch:
             target_pr = pr
             break
             
         if issue_ref in title or f"issue-{issue_number}" in branch or "jules" in branch:
-            target_pr = pr
-            break
-            
-        # Special case for Issue #5
-        if issue_number == 5 and ("cyber" in title or "brutalist" in title or "ui" in title):
             target_pr = pr
             break
             
@@ -237,8 +253,8 @@ def merge_pull_request(issue_number, session_data=None):
         db.update_session_pr(session_id, pr_number, pr_url)
     
     if MANUAL_MODE:
-        logger.info(f"Manual mode: Please review PR #{pr_number}")
-        input("Press Enter once PR is ready to merge...")
+        logger.info(f"Manual mode enabled. Skipping automatic merge for PR #{pr_number}")
+        return False
         
     merge_cmd = f'gh pr merge {pr_number} --repo {TARGET_REPO} --auto --merge'
     result = run_command(merge_cmd)
@@ -257,25 +273,36 @@ def merge_pull_request(issue_number, session_data=None):
         
     return False
 
-def process_existing_prs():
-    """Check all open issues and see if any have an open PR already."""
-    logger.info("Checking for existing PRs that need merging...")
-    issues = fetch_open_issues()
-    processed_count = 0
-    
-    for issue in issues:
-        issue_number = issue['number']
-        # Try to find if we have a session ID in DB for this issue
-        sess = db.get_session_by_issue(issue_number, TARGET_REPO)
-        session_id = sess[0] if sess else None
+def process_one_active_session():
+    """Resume and finish ONE active session if exists. Returns True if work was done."""
+    active = db.get_active_sessions(TARGET_REPO)
+    if not active:
+        return False
         
+    sess = active[0]
+    session_id, issue_number, title, repo, state = sess[0], sess[1], sess[2], sess[3], sess[4]
+    
+    if state == "COMPLETED":
+        logger.info(f"Session {session_id} (Issue #{issue_number}) is COMPLETED. Attempting merge...")
         if merge_pull_request(issue_number, session_id):
-            processed_count += 1
-            
-    if processed_count > 0:
-        logger.info(f"Processed {processed_count} existing PRs.")
-    else:
-        logger.info("No existing PRs found for open issues.")
+            return True
+        else:
+            merge_retries[session_id] = merge_retries.get(session_id, 0) + 1
+            if merge_retries[session_id] > 3:
+                logger.error(f"Stuck COMPLETED session {session_id}. Marking as FAILED.")
+                db.update_session_state(session_id, "FAILED")
+                notifier.notify_failed(issue_number, session_id)
+                db.set_paused(True)
+            return True
+
+    logger.info(f"Resuming active session: {session_id} (Issue #{issue_number}, State: {state})")
+    session_data = run_jules_api_session({'number': issue_number, 'title': title}, session_id=session_id)
+    if session_data:
+        logger.info("Waiting 20s for PR propagation...")
+        time.sleep(20)
+        merge_pull_request(issue_number, session_data)
+    
+    return True
 
 def main():
     if not TARGET_REPO:
@@ -287,16 +314,19 @@ def main():
     logger.info(f"Starting Octo-Jules for {TARGET_REPO} (single_run={single_run})")
     
     while True:
-        # Step 0: Check for work already done
-        process_existing_prs()
+        # CHECK IF PAUSED
+        if db.is_paused():
+            logger.info("Orchestrator is PAUSED via database setting. Sleeping...")
+            time.sleep(60)
+            continue
+
+        if process_one_active_session():
+            if single_run: break
+            continue
         
-        # Step 1: Fetch next issue
         issue = fetch_next_issue()
         if issue:
-            # Step 2: Run Jules via API
             session_data = run_jules_api_session(issue)
-            
-            # Step 3: Merge PR
             if session_data:
                 logger.info("Waiting 20s for PR to propagate...")
                 time.sleep(20)
@@ -306,6 +336,7 @@ def main():
             if single_run: break
             
         if single_run: break
+        logger.info(f"Sleeping for {SLEEP_INTERVAL}s...")
         time.sleep(SLEEP_INTERVAL)
 
 if __name__ == "__main__":

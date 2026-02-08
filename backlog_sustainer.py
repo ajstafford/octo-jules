@@ -20,10 +20,11 @@ ISSUE_LABEL = os.getenv("ISSUE_LABEL", "jules-task")
 MIN_BACKLOG_SIZE = 5
 MODEL = "anthropic/claude-3.5-haiku"
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
+def get_client():
+    return OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+    )
 
 def run_command(command, cwd=None):
     try:
@@ -64,6 +65,11 @@ def get_existing_issues():
 
 def generate_new_ideas(context, existing_titles):
     """Use OpenRouter via OpenAI SDK to generate ideas."""
+    if not OPENROUTER_API_KEY:
+        logger.error("OPENROUTER_API_KEY not set in environment.")
+        return []
+
+    client = get_client()
     prompt = f"""
 You are a Product Manager for the repository: {TARGET_REPO}.
 Suggest {MIN_BACKLOG_SIZE} new, creative feature ideas.
@@ -109,8 +115,8 @@ def main():
     
     logger.info(f"Current backlog count: {count}")
     
-    if count < MIN_BACKLOG_SIZE:
-        logger.info("Generating new ideas...")
+    if count == 0:
+        logger.info("Backlog is empty. Generating new ideas...")
         context = get_repo_context()
         existing = get_existing_issues()
         new_ideas = generate_new_ideas(context, existing)
@@ -121,7 +127,7 @@ def main():
             logger.info(f"Creating issue: {title}")
             run_command(f'gh issue create --repo {TARGET_REPO} --title "{title}" --body "{body}" --label "{ISSUE_LABEL}"')
     else:
-        logger.info("Backlog sufficient.")
+        logger.info(f"Backlog still has {count} items. Skipping generation.")
 
 if __name__ == "__main__":
     main()
