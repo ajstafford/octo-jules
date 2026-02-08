@@ -42,6 +42,10 @@ def notify_merged(issue_number, pr_number):
     msg = f"✅ *Merged*\n\nPR #{pr_number} for Issue #{issue_number} has been successfully merged!"
     send_message(msg)
 
+def notify_pr_ready_for_review(issue_number, pr_url):
+    msg = f"👀 *Ready for Review*\n\nJules has finished work on Issue #{issue_number}.\nPlease review and merge the PR manually:\n{pr_url}"
+    send_message(msg)
+
 def notify_failed(issue_number, session_id):
     msg = f"❌ *Session Failed*\n\nSession {session_id} for Issue #{issue_number} has failed.\nOrchestrator has been PAUSED."
     send_message(msg)

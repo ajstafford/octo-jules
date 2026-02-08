@@ -5,6 +5,7 @@ Octo-Jules is an autonomous development loop that leverages Google's **Jules API
 ## 🚀 Features
 
 - **Autonomous Orchestrator**: Fetches prioritized issues and triggers Jules coding sessions.
+- **Auto-Pause on Failure**: If a session fails or a merge gets stuck, the system automatically pauses and sends a Telegram alert to prevent further issues.
 - **Manual Control**: The system waits for your approval before starting work and before merging PRs. It will never merge code without your explicit action on GitHub.
 - **Interactive Selection**: Choose which issue Jules works on next directly from Telegram.
 - **Backlog Sustainer**: Uses LLMs (via OpenRouter) to analyze your codebase and automatically generate new feature ideas.
@@ -48,9 +49,33 @@ Fill in the required variables in `.env`:
 - `JULES_API_KEY`: Your Google Jules API key.
 - `OPENROUTER_API_KEY`: For backlog generation.
 - `TELEGRAM_BOT_TOKEN`: Your bot token.
-- `DB_PASSWORD`: Set a secure password for the local Postgres instance.
+- `DB_PASSWORD`: **Required**. Set a secure password for the local Postgres instance. The app will not start without this.
 
-### 3. Launching
+- `DB_PASSWORD`: **Required**. Set a secure password for the local Postgres instance. The app will not start without this.
+
+### 4. Personas Configuration
+
+Octo-Jules uses "personas" to generate varied backlog ideas (e.g., Product Manager, QA, Security Engineer).
+
+1.  Create a `personas.json` file in the root directory.
+2.  Define your various AI agents. Example:
+
+```json
+{
+  "pm": {
+    "name": "Product Manager",
+    "prompt": "You are a PM focused on user value. Suggest features that improve retention."
+  },
+  "qa": {
+    "name": "QA Engineer",
+    "prompt": "You are a QA Engineer. Suggest improvements to test coverage and reliability."
+  }
+}
+```
+
+3.  Use the **🔄 Sync Backlog** button in Telegram to choose which persona generates the next set of tasks.
+
+### 5. Launching
 Use the provided `Makefile` for convenience:
 
 ```bash
@@ -67,6 +92,7 @@ Access the dashboard at `http://localhost:8501`.
 4.  **Coding:** Jules will work on the issue. You can monitor progress in the dashboard or via bot updates.
 5.  **Review:** When finished, Jules creates a PR. The bot sends you the link.
 6.  **Merge:** Review the PR on GitHub and merge it manually. The orchestrator will detect the merge and close the issue automatically.
+7.  **Handle Failures:** If a session fails, the bot will alert you. Use `/status` to check details, fix the issue, and then click **▶️ Resume**.
 
 ## 🤖 Telegram Bot Commands
 

@@ -237,11 +237,13 @@ def run_jules_api_session(issue, session_id=None):
             logger.error(f"Polling failed: {e}")
             time.sleep(30)
 
-def check_pr_status(issue_number, session_data=None):
+def check_pr_status(issue_number, session_data=None, notify=False):
     """Check if the PR for the issue has been manually merged."""
     logger.info(f"Checking PR status for Issue #{issue_number}...")
     
-    find_pr_cmd = f'gh pr list --repo {TARGET_REPO} --json number,url,title,headRefName,state'
+    # Use --state all and --limit to find recent PRs (merged or open)
+    # Search by issue number is unreliable if title doesn't contain it.
+    find_pr_cmd = f'gh pr list --repo {TARGET_REPO} --state all --limit 50 --json number,url,title,headRefName,state'
     pr_output = run_command(find_pr_cmd)
     
     if not pr_output:
@@ -278,33 +280,8 @@ def check_pr_status(issue_number, session_data=None):
     
     # Notify if first time seeing PR
     if session_id:
-        # Check if we already recorded this PR
-        # (Optimally we'd check DB, but updating redundant info is safe)
         db.update_session_pr(session_id, pr_number, pr_url)
 
-    # Check actual status from GitHub (explicit view to get merged state if closed)
-    # 'gh pr list' only shows open PRs by default unless -s all is used, but we used default list.
-    # If user merged it, it might disappear from 'gh pr list' default output!
-    # So we should use 'gh pr view' if we found it, OR search properly.
-    
-    # Better approach: If we found it in 'list' it's OPEN.
-    # If we didn't find it in 'list', it might be merged.
-    # Let's verify specific PR if we have a number from DB, or search all.
-    
-    # Let's rely on 'gh pr view' if we have the number from DB.
-    # But here we are discovering it.
-    
-    # Let's change the search command to include merged/closed
-    # find_pr_cmd = f'gh pr list --repo {TARGET_REPO} --state all --json ...' 
-    # But that might be heavy.
-    
-    # Let's stick to: If it's OPEN (found in list), notify.
-    # If user says they merged it, we need to detect it.
-    
-    # Let's query the specific PR if we know it (from DB session)
-    pass # logic continues below...
-
-    # Re-query specific PR to get exact state if we found one
     view_cmd = f'gh pr view {pr_number} --repo {TARGET_REPO} --json state,url'
     view_out = run_command(view_cmd)
     if view_out:
@@ -323,10 +300,9 @@ def check_pr_status(issue_number, session_data=None):
             return True
             
         elif state == "OPEN":
-            # Notify ready for review (idempotency managed by notifier or just ignored here)
-            # We assume 'notifier.notify_pr_created' was called when first created.
-            # We can add a 'reminder' logic later if needed.
             logger.info(f"PR #{pr_number} is OPEN. Waiting for manual merge.")
+            if notify:
+                notifier.notify_pr_ready_for_review(issue_number, pr_url)
             return False
 
     return False
@@ -359,7 +335,7 @@ def process_one_active_session():
     if session_data:
         logger.info("Waiting 20s for PR propagation...")
         time.sleep(20)
-        check_pr_status(issue_number, session_data)
+        check_pr_status(issue_number, session_data, notify=True)
     
     return True
 
@@ -389,7 +365,7 @@ def main():
             if session_data:
                 logger.info("Waiting 20s for PR to propagate...")
                 time.sleep(20)
-                check_pr_status(issue['number'], session_data)
+                check_pr_status(issue['number'], session_data, notify=True)
         else:
             logger.info("Nothing to do.")
             if single_run: break
