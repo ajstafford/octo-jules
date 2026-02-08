@@ -49,3 +49,7 @@ def notify_pr_ready_for_review(issue_number, pr_url):
 def notify_failed(issue_number, session_id):
     msg = f"❌ *Session Failed*\n\nSession {session_id} for Issue #{issue_number} has failed.\nOrchestrator has been PAUSED."
     send_message(msg)
+
+def notify_merge_failed(issue_number, pr_number):
+    msg = f"🚨 *Merge Failed*\n\nAuto-merge failed for PR #{pr_number} (Issue #{issue_number}).\nOrchestrator has been PAUSED. Please check logs and resolve manually."
+    send_message(msg)

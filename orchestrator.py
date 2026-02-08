@@ -24,6 +24,7 @@ if os.getenv("GITHUB_TOKEN") and not os.getenv("GH_TOKEN"):
 TARGET_REPO = os.getenv("TARGET_REPO")
 ISSUE_LABEL = os.getenv("ISSUE_LABEL", "jules-task")
 MANUAL_MODE = os.getenv("MANUAL_MODE", "false").lower() == "true"
+YOLO_MODE = os.getenv("YOLO_MODE", "false").lower() == "true"
 SLEEP_INTERVAL = int(os.getenv("SLEEP_INTERVAL", "300"))
 JULES_API_KEY = os.getenv("JULES_API_KEY")
 
@@ -76,7 +77,7 @@ def fetch_next_issue():
             return None
 
     # 2. Check if we are already waiting for input
-    if db.get_setting('waiting_for_input') == 'true':
+    if not YOLO_MODE and db.get_setting('waiting_for_input') == 'true':
         logger.info("Waiting for user selection...")
         return None
 
@@ -90,12 +91,17 @@ def fetch_next_issue():
     for issue in issues:
         # Check if issue is already in progress
         sess = db.get_session_by_issue(issue['number'], TARGET_REPO)
-        if not sess or sess[4] in ['MERGED', 'FAILED']: # state index is 4
+        if not sess:
             valid_issues.append(issue)
             
     if not valid_issues:
         logger.info("All open issues are already processed or in progress.")
         return None
+
+    if YOLO_MODE:
+        issue = valid_issues[0]
+        logger.info(f"YOLO MODE: Auto-selecting Issue #{issue['number']} - {issue['title']}")
+        return issue
 
     # Construct prompt message
     msg = "📋 *Select Next Task*\n\n"
@@ -171,6 +177,10 @@ def run_jules_api_session(issue, session_id=None):
             if not source_name:
                 return None
 
+            # Allow overriding the base branch via environment variable
+            starting_branch = os.getenv("BASE_BRANCH") or default_branch
+            logger.info(f"Using starting branch: {starting_branch}")
+
             logger.info(f"Starting NEW Jules API session for Issue #{issue_number}")
             notifier.notify_session_started(issue_number, issue_title)
             
@@ -184,7 +194,7 @@ def run_jules_api_session(issue, session_id=None):
                 "sourceContext": {
                     "source": source_name,
                     "githubRepoContext": {
-                        "startingBranch": default_branch
+                        "startingBranch": starting_branch
                     }
                 },
                 "automationMode": "AUTO_CREATE_PR",
@@ -301,6 +311,18 @@ def check_pr_status(issue_number, session_data=None, notify=False):
             
         elif state == "OPEN":
             logger.info(f"PR #{pr_number} is OPEN. Waiting for manual merge.")
+            
+            if YOLO_MODE:
+                logger.info(f"YOLO MODE: Attempting to auto-merge PR #{pr_number}...")
+                merge_cmd = f'gh pr merge {pr_number} --repo {TARGET_REPO} --merge --delete-branch'
+                merge_out = run_command(merge_cmd)
+                if merge_out is not None:
+                     logger.info(f"YOLO MODE: Merge command sent for PR #{pr_number}.")
+                else:
+                     logger.error(f"YOLO MODE: Failed to merge PR #{pr_number}.")
+                     notifier.notify_merge_failed(issue_number, pr_number)
+                     db.set_paused(True)
+
             if notify:
                 notifier.notify_pr_ready_for_review(issue_number, pr_url)
             return False

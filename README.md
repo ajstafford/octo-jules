@@ -5,6 +5,7 @@ Octo-Jules is an autonomous development loop that leverages Google's **Jules API
 ## 🚀 Features
 
 - **Autonomous Orchestrator**: Fetches prioritized issues and triggers Jules coding sessions.
+- **YOLO Mode**: ⚠️ Optional mode that auto-selects tasks and auto-merges PRs without human intervention.
 - **Auto-Pause on Failure**: If a session fails or a merge gets stuck, the system automatically pauses and sends a Telegram alert to prevent further issues.
 - **Manual Control**: The system waits for your approval before starting work and before merging PRs. It will never merge code without your explicit action on GitHub.
 - **Interactive Selection**: Choose which issue Jules works on next directly from Telegram.
@@ -50,6 +51,7 @@ Fill in the required variables in `.env`:
 - `OPENROUTER_API_KEY`: For backlog generation.
 - `TELEGRAM_BOT_TOKEN`: Your bot token.
 - `DB_PASSWORD`: **Required**. Set a secure password for the local Postgres instance. The app will not start without this.
+- `YOLO_MODE`: Set to `true` to enable fully autonomous operation (auto-pick tasks, auto-merge PRs). **Use with caution.**
 
 - `DB_PASSWORD`: **Required**. Set a secure password for the local Postgres instance. The app will not start without this.
 
