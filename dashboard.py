@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
+import db
 from datetime import datetime
 import time
 
@@ -10,10 +10,12 @@ st.title("Octo-Jules Automation Dashboard")
 st.write("Monitoring the Jules autonomous development loop.")
 
 def get_data():
-    conn = sqlite3.connect("octo_jules.db")
-    query = "SELECT * FROM sessions ORDER BY created_at DESC"
-    df = pd.read_sql_query(query, conn)
-    conn.close()
+    conn = db.get_connection()
+    try:
+        query = "SELECT * FROM sessions ORDER BY created_at DESC"
+        df = pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
     return df
 
 # Sidebar for controls

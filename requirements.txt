@@ -4,3 +4,4 @@ streamlit
 pandas
 openai
 python-telegram-bot
+psycopg2-binary

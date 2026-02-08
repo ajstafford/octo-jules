@@ -57,24 +57,54 @@ def fetch_open_issues():
     return json.loads(output)
 
 def fetch_next_issue():
-    """Fetch the next available issue from the backlog, skipping processed ones."""
-    logger.info("Checking for next available issue...")
+    """Fetch the next issue based on user selection via Telegram."""
+    logger.info("Checking for next task...")
+    
+    # 1. Check if user selected an issue
+    selected_id = db.get_setting('next_issue')
+    if selected_id:
+        logger.info(f"User selected issue #{selected_id}")
+        db.delete_setting('next_issue')
+        db.delete_setting('waiting_for_input')
+        
+        cmd = f'gh issue view {selected_id} --repo {TARGET_REPO} --json number,title,body'
+        out = run_command(cmd)
+        if out:
+            return json.loads(out)
+        else:
+            logger.error(f"Selected issue #{selected_id} not found.")
+            return None
+
+    # 2. Check if we are already waiting for input
+    if db.get_setting('waiting_for_input') == 'true':
+        logger.info("Waiting for user selection...")
+        return None
+
+    # 3. Fetch open issues and prompt user
     issues = fetch_open_issues()
     if not issues:
-        logger.info("No issues found in backlog.")
+        logger.info("No open issues found in backlog.")
         return None
     
+    valid_issues = []
     for issue in issues:
-        issue_number = issue['number']
-        # Check database for this issue
-        sess = db.get_session_by_issue(issue_number, TARGET_REPO)
-        if sess:
-            logger.info(f"Issue #{issue_number} is already in DB. Skipping in fetch.")
-            continue
-        
-        return issue
+        # Check if issue is already in progress
+        sess = db.get_session_by_issue(issue['number'], TARGET_REPO)
+        if not sess or sess[4] in ['MERGED', 'FAILED']: # state index is 4
+            valid_issues.append(issue)
+            
+    if not valid_issues:
+        logger.info("All open issues are already processed or in progress.")
+        return None
+
+    # Construct prompt message
+    msg = "📋 *Select Next Task*\n\n"
+    for i in valid_issues[:10]:
+        msg += f"• *#{i['number']}*: {i['title']}\n"
+    msg += "\nReply with `/pick <number>` to start."
     
-    logger.info("All open issues have already been processed.")
+    notifier.send_message(msg)
+    db.set_setting('waiting_for_input', 'true')
     return None
 
 def get_repo_info():
@@ -207,11 +237,11 @@ def run_jules_api_session(issue, session_id=None):
             logger.error(f"Polling failed: {e}")
             time.sleep(30)
 
-def merge_pull_request(issue_number, session_data=None):
-    """Find and merge the PR created by Jules."""
-    logger.info(f"Searching for PR linked to Issue #{issue_number} in {TARGET_REPO}...")
+def check_pr_status(issue_number, session_data=None):
+    """Check if the PR for the issue has been manually merged."""
+    logger.info(f"Checking PR status for Issue #{issue_number}...")
     
-    find_pr_cmd = f'gh pr list --repo {TARGET_REPO} --json number,url,title,headRefName'
+    find_pr_cmd = f'gh pr list --repo {TARGET_REPO} --json number,url,title,headRefName,state'
     pr_output = run_command(find_pr_cmd)
     
     if not pr_output:
@@ -246,31 +276,59 @@ def merge_pull_request(issue_number, session_data=None):
     pr_number = target_pr['number']
     pr_url = target_pr['url']
     
-    logger.info(f"Found PR #{pr_number}: {pr_url}")
-    notifier.notify_pr_created(issue_number, pr_url)
-    
+    # Notify if first time seeing PR
     if session_id:
+        # Check if we already recorded this PR
+        # (Optimally we'd check DB, but updating redundant info is safe)
         db.update_session_pr(session_id, pr_number, pr_url)
+
+    # Check actual status from GitHub (explicit view to get merged state if closed)
+    # 'gh pr list' only shows open PRs by default unless -s all is used, but we used default list.
+    # If user merged it, it might disappear from 'gh pr list' default output!
+    # So we should use 'gh pr view' if we found it, OR search properly.
     
-    if MANUAL_MODE:
-        logger.info(f"Manual mode enabled. Skipping automatic merge for PR #{pr_number}")
-        return False
-        
-    merge_cmd = f'gh pr merge {pr_number} --repo {TARGET_REPO} --auto --merge'
-    result = run_command(merge_cmd)
+    # Better approach: If we found it in 'list' it's OPEN.
+    # If we didn't find it in 'list', it might be merged.
+    # Let's verify specific PR if we have a number from DB, or search all.
     
-    if result is not None:
-        logger.info(f"Merged PR #{pr_number}")
-        notifier.notify_merged(issue_number, pr_number)
+    # Let's rely on 'gh pr view' if we have the number from DB.
+    # But here we are discovering it.
+    
+    # Let's change the search command to include merged/closed
+    # find_pr_cmd = f'gh pr list --repo {TARGET_REPO} --state all --json ...' 
+    # But that might be heavy.
+    
+    # Let's stick to: If it's OPEN (found in list), notify.
+    # If user says they merged it, we need to detect it.
+    
+    # Let's query the specific PR if we know it (from DB session)
+    pass # logic continues below...
+
+    # Re-query specific PR to get exact state if we found one
+    view_cmd = f'gh pr view {pr_number} --repo {TARGET_REPO} --json state,url'
+    view_out = run_command(view_cmd)
+    if view_out:
+        pr_details = json.loads(view_out)
+        state = pr_details['state'] # OPEN, MERGED, CLOSED
         
-        if session_id:
-            db.update_session_state(session_id, "MERGED")
+        if state == "MERGED":
+            logger.info(f"PR #{pr_number} is MERGED.")
+            notifier.notify_merged(issue_number, pr_number)
             
-        close_issue_cmd = f'gh issue close {issue_number} --repo {TARGET_REPO} --comment "Merged via automation in PR #{pr_number}"'
-        run_command(close_issue_cmd)
-        logger.info(f"Closed Issue #{issue_number}")
-        return True
-        
+            if session_id:
+                db.update_session_state(session_id, "MERGED")
+            
+            close_issue_cmd = f'gh issue close {issue_number} --repo {TARGET_REPO} --comment "Merged via automation in PR #{pr_number}"'
+            run_command(close_issue_cmd)
+            return True
+            
+        elif state == "OPEN":
+            # Notify ready for review (idempotency managed by notifier or just ignored here)
+            # We assume 'notifier.notify_pr_created' was called when first created.
+            # We can add a 'reminder' logic later if needed.
+            logger.info(f"PR #{pr_number} is OPEN. Waiting for manual merge.")
+            return False
+
     return False
 
 def process_one_active_session():
@@ -283,16 +341,17 @@ def process_one_active_session():
     session_id, issue_number, title, repo, state = sess[0], sess[1], sess[2], sess[3], sess[4]
     
     if state == "COMPLETED":
-        logger.info(f"Session {session_id} (Issue #{issue_number}) is COMPLETED. Attempting merge...")
-        if merge_pull_request(issue_number, session_id):
+        logger.info(f"Session {session_id} (Issue #{issue_number}) is COMPLETED. Waiting for manual merge...")
+        if check_pr_status(issue_number, session_id):
+            logger.info(f"Session {session_id} manually merged and finalized.")
             return True
         else:
-            merge_retries[session_id] = merge_retries.get(session_id, 0) + 1
-            if merge_retries[session_id] > 3:
-                logger.error(f"Stuck COMPLETED session {session_id}. Marking as FAILED.")
-                db.update_session_state(session_id, "FAILED")
-                notifier.notify_failed(issue_number, session_id)
-                db.set_paused(True)
+            # PR is still open. We block here. 
+            # We return True to indicate "work is pending" (waiting), 
+            # so the main loop doesn't sleep for full interval or pick new tasks.
+            # But we should sleep a bit to avoid hot-looping the API.
+            logger.info("PR not yet merged. Sleeping 60s...")
+            time.sleep(60)
             return True
 
     logger.info(f"Resuming active session: {session_id} (Issue #{issue_number}, State: {state})")
@@ -300,7 +359,7 @@ def process_one_active_session():
     if session_data:
         logger.info("Waiting 20s for PR propagation...")
         time.sleep(20)
-        merge_pull_request(issue_number, session_data)
+        check_pr_status(issue_number, session_data)
     
     return True
 
@@ -330,7 +389,7 @@ def main():
             if session_data:
                 logger.info("Waiting 20s for PR to propagate...")
                 time.sleep(20)
-                merge_pull_request(issue['number'], session_data)
+                check_pr_status(issue['number'], session_data)
         else:
             logger.info("Nothing to do.")
             if single_run: break

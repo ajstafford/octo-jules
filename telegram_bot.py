@@ -4,7 +4,7 @@ import json
 import subprocess
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 import db
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,9 +52,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data == "status":
         conn = db.get_connection()
-        cursor = conn.execute("SELECT issue_title, state FROM sessions ORDER BY created_at DESC LIMIT 5")
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT issue_title, state FROM sessions ORDER BY created_at DESC LIMIT 5")
+                rows = cursor.fetchall()
+        finally:
+            conn.close()
         
         paused = db.is_paused()
         msg = f"*Current State:* {'⏸ PAUSED' if paused else '🚀 RUNNING'}\n\n*Recent Sessions:*\n"
@@ -108,6 +111,20 @@ async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to create issue: {e}")
 
+async def pick_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /pick <issue_number>")
+        return
+    
+    try:
+        issue_number = int(context.args[0])
+        db.set_setting('next_issue', issue_number)
+        await update.message.reply_text(f"✅ Issue #{issue_number} selected. Jules will start shortly.")
+    except ValueError:
+        await update.message.reply_text("❌ Please provide a valid issue number.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
 if __name__ == '__main__':
     if not TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN not set.")
@@ -115,8 +132,10 @@ if __name__ == '__main__':
         app = ApplicationBuilder().token(TOKEN).build()
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("add_task", add_task))
+        app.add_handler(CommandHandler("pick", pick_issue))
         app.add_handler(CommandHandler("status", lambda u, c: start(u, c))) # Alias /status to /start for keyboard
         app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), start))
         
         print("Bot is running...")
         app.run_polling()

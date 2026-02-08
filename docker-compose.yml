@@ -1,10 +1,25 @@
 services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   orchestrator:
     build: .
     command: python3 orchestrator.py
     env_file: .env
-    volumes:
-      - ./octo_jules.db:/app/octo_jules.db
+    environment:
+      - DB_HOST=db
+      - DB_PASSWORD=${DB_PASSWORD}
+    depends_on:
+      - db
     restart: unless-stopped
 
   dashboard:
@@ -13,17 +28,23 @@ services:
     ports:
       - "8501:8501"
     env_file: .env
-    volumes:
-      - ./octo_jules.db:/app/octo_jules.db
+    environment:
+      - DB_HOST=db
+      - DB_PASSWORD=${DB_PASSWORD}
+    depends_on:
+      - db
     restart: unless-stopped
 
   telegram_bot:
     build: .
     command: python3 telegram_bot.py
     env_file: .env
-    volumes:
-      - ./octo_jules.db:/app/octo_jules.db
+    environment:
+      - DB_HOST=db
+      - DB_PASSWORD=${DB_PASSWORD}
+    depends_on:
+      - db
     restart: unless-stopped
 
 volumes:
-  db_data:
+  pg_data:
