@@ -29,6 +29,11 @@ Octo-Jules is an autonomous development loop that leverages Google's **Jules API
 - An **OpenRouter API Key**.
 - A **Telegram Bot Token**.
 
+### 2. Telegram Configuration
+
+1.  **Create a Bot**: Open Telegram and chat with [@BotFather](https://t.me/BotFather). Send `/newbot` and follow the instructions to get your `TELEGRAM_BOT_TOKEN`.
+2.  **Get your User ID**: Chat with [@userinfobot](https://t.me/userinfobot) (or any similar ID bot) to get your numerical user ID. This is your `TELEGRAM_CHAT_ID`.
+
 ### 2. Configuration
 Clone the repository and create your `.env` file:
 
